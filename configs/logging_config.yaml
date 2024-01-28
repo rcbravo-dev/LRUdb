@@ -17,7 +17,7 @@ handlers:
     class: logging.FileHandler
     level: DEBUG
     formatter: simple
-    filename: '/Users/Shared/SharedProjects/Projects/LastRecentlyUsedDataBase/LRUdb/logs/application_logs.log' # Specify the log file name here
+    filename: '/Users/Shared/SharedProjects/Projects/LastRecentlyUsedDataBase/LRUdb/logs/lru_database.log' # Specify the log file name here
     mode: 'w' # 'a' for append, 'w' for overwrite
 
   # fileEvents:
@@ -39,15 +39,25 @@ handlers:
   #   secure: []
 
 loggers:
-  application:
+  App:
     level: DEBUG
     handlers: [file]
     propagate: no
-    
-  # event:
-  #   level: INFO
-  #   handlers: [fileEvents]
-  #   propagate: no
+
+  Shelf:
+    level: DEBUG
+    handlers: [file]
+    propagate: no
+
+  LRU:
+    level: DEBUG
+    handlers: [file]
+    propagate: no
+
+  DataBase:
+    level: DEBUG
+    handlers: [file]
+    propagate: no
 
 root:
   level: DEBUG
