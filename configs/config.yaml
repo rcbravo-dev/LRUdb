@@ -1,0 +1,15 @@
+version: 1
+
+LRU:
+  # The maximum number of items that can be stored in the cache
+  maxlen: 100
+  # When the cache is full, the fraction of items to sync to the
+  # database.
+  sync_fraction: 0.5
+
+LRU_db:
+  # Encoding for key strings
+  keyencoding: 'utf-8'
+  # pickle protocol
+  protocol: None
+

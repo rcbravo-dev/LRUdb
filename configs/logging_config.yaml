@@ -20,31 +20,13 @@ handlers:
     filename: '/Users/Shared/SharedProjects/Projects/LastRecentlyUsedDataBase/LRUdb/logs/lru_database.log' # Specify the log file name here
     mode: 'w' # 'a' for append, 'w' for overwrite
 
-  # fileEvents:
-  #   class: logging.FileHandler
-  #   level: DEBUG
-  #   formatter: simple
-  #   filename: '/Users/Shared/SharedProjects/Projects/LastRecentlyUsedDataBase/LRUdb/logs/event_logs.log' # Specify the log file name here
-  #   mode: 'w' # 'a' for append, 'w' for overwrite
-
-  # email:
-  #   class: logging.handlers.SMTPHandler
-  #   level: ERROR
-  #   formatter: simple
-  #   mailhost: [smtp.example.com, 587]
-  #   fromaddr: myapp@example.com
-  #   toaddrs: [admin@example.com]
-  #   subject: Error encountered in my application
-  #   credentials: [user@example.com, password]
-  #   secure: []
-
 loggers:
   App:
     level: DEBUG
     handlers: [file]
     propagate: no
 
-  Shelf:
+  LRU_db:
     level: DEBUG
     handlers: [file]
     propagate: no

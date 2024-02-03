@@ -1,32 +1,29 @@
-from lib.utilities import setup_logging
-logging = setup_logging(path = 'configs/logging_config.yaml')
-LOG = logging.getLogger('Shelf')
-LOG.setLevel(logging.DEBUG)
-
-import asyncio
-from pickle import DEFAULT_PROTOCOL, Pickler, Unpickler
-from io import BytesIO
 from collections import namedtuple
+from io import BytesIO
+from pickle import DEFAULT_PROTOCOL, Pickler, Unpickler
+from typing import Any
 
+from lib.utilities import setup_logging, load_yaml
 from lib.database import AsyncDataBase
 from lib.database import test as AsyncDataBase_test
 from lib.lru import LRU
+from lib.lru import test as LRU_test
+
+logging = setup_logging(path = 'configs/logging_config.yaml')
+LOG = logging.getLogger('LRU_db')
+LOG.setLevel(logging.DEBUG)
+
+CONFIGS = load_yaml('configs/config.yaml')['LRU_db']
+CONFIGS['protocol'] = DEFAULT_PROTOCOL
 
 Node = namedtuple('Node', ['node_id', 'node'])
 
 
 class LRUDataBase:
-
-    """Base class for shelf implementations.
-    This is initialized with a dictionary-like object.
-    See the module's __doc__ string for an overview of the interface.
-    """
-
-    def __init__(self, name, cache_size: int = 500, keyencoding: str = 'utf-8', protocol: int = DEFAULT_PROTOCOL) -> None:
-        self.name = name
-        self.cache_size = cache_size
-        self.keyencoding = keyencoding
-        self.protocol = protocol  
+    def __init__(self, file_name: str, table_name: str, configs: dict = CONFIGS) -> None:
+        self.file_name = file_name
+        self.table_name = table_name
+        self.__dict__.update(configs)
     
     async def __aenter__(self):
         await self.connect()
@@ -41,188 +38,218 @@ class LRUDataBase:
 
     async def __anext__(self):
         '''Called by: async for x in self:'''
-        if not hasattr(self, '_database_keys'):
-            self._database_keys = await self.node_keys()
-            
-            for key in list(self.lru.deck):
-                if key in self._database_keys:
-                    pass
-                else:
-                    self._database_keys.append(key)
+        try:
+            if not hasattr(self, '_database_keys'):
+                # Get the keys from the database, returns a list of keys: str
+                self._database_keys = await self.node_keys()
+                
+                # Add the LRU keys to the database keys. The LRU
+                # can be updated without writing to the database.
+                # The deck is a deque of bytes.
+                for k in list(self.lru.deck):
+                    key = self._decode_key(k)
+                    if key in self._database_keys:
+                        pass
+                    else:
+                        self._database_keys.append(key)
 
-        if len(self._database_keys) > 0:
-            return self._database_keys.pop(0)
-        else:
+            # Removes the last key from the list, this will 
+            # generally be the most recently used key.
+            _next = self._database_keys.pop()
+        except IndexError:
             self.__dict__.pop('_database_keys')
             raise StopAsyncIteration
+        else:
+            return _next
 
-    async def connect(self):
-        self.lru = LRU(maxlen=self.cache_size)
-        self.db = AsyncDataBase(self.name)
-        
+    async def connect(self, database_path: str | None = None) -> None:
+        self.lru = LRU()
+    
         # Creates the connection thread and the cursor
+        # Create(if not already made) a table named 'table_name'
+        if database_path is not None:
+            self.db = AsyncDataBase(self.file_name, self.table_name, database_path=database_path)
+        else:
+            self.db = AsyncDataBase(self.file_name, self.table_name)
+
         await self.db.open_connection()
-        
-        # Create(if not already made) a table named 'name' with filename location/name.db
         await self.db.create()
-        
-    async def write(self, key, value) -> None:
-        '''This method first checks that the LRU is not full, if it is, it prepares the oldest data
-        in the LRU for offloading to the database, then writes to the database by calling 
-        sync(). Finally, it adds the new data to the LRU.'''
+                
+    async def write(self, key: str, value: Any) -> None:
+        '''This method first writes to the LRU cache. If the cache is full it prepares 
+        the oldest data in the LRU for offloading to the database, then writes to the 
+        database by calling sync().'''
+        self.lru[self._encode_key(key)] = self._serialize(value)
+
         if self.lru.deck_full:
             await self.sync()
         
-        self.lru[key] = value
-
-    async def read(self, key: str | list):
+    async def read(self, key: str | list) -> Any | list:
         if isinstance(key, str):
             try:
+                key = self._encode_key(key)
+
                 # Check if key is in the LRU
                 value = self.lru[key]
             except KeyError:
-                # Key is not in the LRU, check the database
-                # blob = self.loop(self.db.check_out(key.encode(self.keyencoding)))
-                blob = await self.db.read(key.encode(self.keyencoding))
+                # Key is not in the LRU, check the database. blob is a Node object
+                blob = await self.db.read(key)
 
                 if blob:
-                    # If a blob was returned, 
-                    value = self._un_serialize(blob.node)
+                    # Add the key and serialized value to the LRU
+                    await self.write(key, blob.node)
 
-                    # Add the key to the LRU
-                    await self.write(key, value)
-                    return value
+                    # Un_serialize the value and return
+                    return self._un_serialize(blob.node)
                 else:
                     # No blob was returned, key is not in the database or LRU
                     return None
             else:
                 # Key is in the LRU, return the value
-                return value
+                return self._un_serialize(value)
             
         elif isinstance(key, list):
             return await self._read_many(key)
         
-    async def get(self, key: str, default=None):
-        '''Returns namedtuple with type(node) == bytes'''
+    async def get(self, key: str, default: Any = None) -> Any:
+        '''Returns the unserialized value of the key. If not in the 
+        database or LRU, returns default.'''
         results = await self.read(key)
         if results is None:
             return default
-        
         return results
 
-    async def _read_many(self, keys: list):
+    async def _read_many(self, keys: list) -> dict:
         read_from_db = []
         results = {}
+
         # First check the LRU for the keys
-        for i, key in enumerate(keys):
+        for key in keys:
             try:
-                value = self.lru[key]
+                _key = self._encode_key(key)
+
+                value = self.lru[_key]
             except KeyError:
-                # If key not in the LRU, add to the get list
+                # If key not in the LRU, add to the read list
                 results[key] = None
-                read_from_db.append(key.encode(self.keyencoding))
+                read_from_db.append(_key)
                 continue
             else:
                 # If key is in the LRU, add to the results dict
-                results[key] = value
+                results[key] = self._un_serialize(value)
         
-        # Send the list to the database and get a list of Node objects
-        blob_list = await self.db.read(read_from_db)
-        
-        for blob in blob_list:
-            # Get the next node in the blob and un_serialize
-            key = blob.node_id.decode(self.keyencoding)
-            value = self._un_serialize(blob.node)
+        # If all keys are in the LRU, return the results, 
+        # else read from the database to get the missing keys
+        if read_from_db:
+            # Send the list to the database and get a list of Node objects
+            blob_list = await self.db.read(read_from_db)
             
-            # Update the results dict
-            results[key] = value
+            for blob in blob_list:
+                # Update the LRU
+                await self.write(blob.node_id, blob.node)
 
-            # Update the LRU
-            await self.write(key, value)
-        
+                # Get the next node in the blob and un_serialize
+                key = self._decode_key(blob.node_id)
+                value = self._un_serialize(blob.node)
+                
+                # Update the results dict
+                results[key] = value
+
         return results
 
     async def node_keys(self) -> list:
         '''Retrieves all the keys from the database'''
         keys = await self.db.node_keys()
-        return [key.decode(self.keyencoding) for key in keys if type(key) == bytes]
+        return [self._decode_key(key) for key in keys]
     
-    async def delete(self, key):
+    async def delete(self, key: str) -> None:
         '''del self[key]'''
-        await self.db.delete_node(key.encode(self.keyencoding))
+        key = self._encode_key(key)
+
+        await self.db.delete_node(key)
         
         try:
             del self.lru[key]
-            
         except KeyError:
             pass
 
     async def flush_cache(self):
         try:
             # Flush the LRU cache to the database
-            flush_store = {}
-            for key in list(self.lru.deck):
-                value = self.lru.cache.pop(key)
-                flush_store[key.encode(self.keyencoding)] = self._serialize(value)
-                self.lru.count -= 1
-
-            # Write the flush_store (lru cache) to the database
-            await self.db.write(flush_store)
-
-            if len(self.lru.cache) != 0:
-                raise ValueError(f'Length of the LRU Cache should be 0: len={len(self.lru.cache)} != 0')     
-        except ValueError as error:
-            LOG.exception(f'Flush Cache error: {error}')
+            await self.db.write(self.lru.cache)    
+            cache_size = len(self.lru)
+        except Exception as error:
+            LOG.exception(f'flush_cache: {error}')
             raise
         else:
-            LOG.info(f'Flushed the LRU cache, shelve_name={self.name}, count={len(flush_store)}')
-            self.lru.deck_full = False
+            self.lru._create_empty_deck()
+            LOG.info(f'Flushed the LRU cache, shelve_name={self.table_name}, count={cache_size}')
             
-    async def sync(self, fraction_of_cache=0.5):
+    async def sync(self):
         try:
-            self.lru.sync_make_ready()
-
-            sync_store = {}
-            for key in self.lru.sync_store:
-                value = self.lru.cache.pop(key)
-                sync_store[key.encode(self.keyencoding)] = self._serialize(value)
-                self.lru.count -= 1
+            sync_store = self.lru.sync_make_ready()
 
             # Write the sync_store (old items in LRU cahce) to the database
             await self.db.write(sync_store)
 
             if len(self.lru.cache) != self.lru.count:
                 raise ValueError(f'Sync did not off load all LRU cache items. len_lru={len(self.lru.cache)} != cnt_lru={self.lru.count}')
-        except ValueError as error:
-            LOG.exception(f'Sync error: {error}')
+        except Exception as error:
+            LOG.exception(f'sync: {error}')
             raise
         else:
-            LOG.info(f'Sync offloaded cached items to the database, shelve_name={self.name}, count={len(sync_store)}')
-            self.lru.deck_full = False
+            LOG.info(f'Sync offloaded old cached items to the database, shelve_name={self.table_name}, count={len(sync_store)}')
    
     async def close(self):
         try:
             await self.flush_cache()
-            del self.lru
-        except Exception as error:
-            LOG.exception(f'Close error: {error}')
-            raise
-        finally:
             await self.db.close()
+        except Exception as error:
+            LOG.exception(f'close: {error}')
+            raise     
+        else:
+            self.lru = None
+            self.db = None
+            LOG.info(f'Closed LRUDataBase table: {self.table_name}')       
 
-    def _serialize(self, value):
-        f = BytesIO()
-        p = Pickler(f, self.protocol)
-        p.dump(value)        
-        return f.getvalue()
+    def _encode_key(self, key: str) -> bytes:
+        if isinstance(key, bytes):
+            return key
+        else:
+            return key.encode(self.keyencoding)
     
-    def _un_serialize(self, blob: bytes):
-        f = BytesIO(blob)
-        return Unpickler(f).load()      
+    def _decode_key(self, key: bytes) -> str:
+        if isinstance(key, str):
+            return key
+        else:
+            return key.decode(self.keyencoding)
+    
+    def _serialize(self, value) -> bytes:
+        if isinstance(value, bytes):
+            return value
+        else:
+            f = BytesIO()
+            p = Pickler(f, self.protocol)
+            p.dump(value)        
+            return f.getvalue()
+    
+    def _un_serialize(self, blob: bytes) -> Any:
+        if not isinstance(blob, bytes):
+            return blob
+        else:
+            f = BytesIO(blob)
+            return Unpickler(f).load()      
         
     
 async def test(db_size:int = 10, verbose: bool = False) -> bool:
     import hashlib
+    from pathlib import Path
+    from pickle import DEFAULT_PROTOCOL
+    from lib.utilities import CWD
+    configs = load_yaml('configs/config.yaml')['LRU_db']
+    configs['protocol'] = DEFAULT_PROTOCOL
+
+    test_database = CWD + 'database/zkp_test_db.db'
 
     try:
         # Test data
@@ -237,9 +264,15 @@ async def test(db_size:int = 10, verbose: bool = False) -> bool:
         # Test the AsyncDataBase
         assert await AsyncDataBase_test(), 'Database test failed'
 
+        # Test the LRU
+        assert LRU_test(), 'LRU test failed'
+        
         # Test the LRUDataBase
-        shelf = LRUDataBase('test_database', cache_size=db_size)
+        shelf = LRUDataBase('test_database', 'test_case', configs=configs)
         await shelf.connect()
+        shelf.lru.maxlen = db_size
+        if verbose:
+            print('shelf connected, size=', shelf.lru.maxlen)
 
         # Tests writes: This will fill the LRU but will not sync to the database.
         cnt = 0
@@ -248,7 +281,7 @@ async def test(db_size:int = 10, verbose: bool = False) -> bool:
             if verbose:
                 print('Added to shelf: ', k, v)
             cnt += 1
-            if cnt == db_size:
+            if cnt == (db_size - 1):
                 break
 
         # Add to shelf last key should be key9
@@ -259,18 +292,26 @@ async def test(db_size:int = 10, verbose: bool = False) -> bool:
         db_keys = await shelf.node_keys()
 
         # LRU should be full so key0 should be in the LRU
-        assert 'key0' in lru_keys, f'shelf synced too early: {lru_keys}'
+        assert b'key0' in lru_keys, f'shelf synced too early: {lru_keys}'
 
-        # Database keys should be empty
+        # Database keys should be empty. The LRU is not full, and therefor 
+        # has not requested a database sync.
         assert len(db_keys) == 0, f'shelf synced too early: {db_keys}'
         
-        # Write to force database/LRU sync
-        await shelf.write('key10', data['key10'])
+        # Write to force database/LRU sync. Once database is full a sync is
+        # ordered.
+        await shelf.write('key9', data['key9'])
         lru_keys = shelf.lru.deck
+        # list of strings
         db_keys = await shelf.node_keys()
 
+        if verbose:
+            print('lru: ', lru_keys)
+            print('db: ', db_keys)
+            print('deck full?', shelf.lru.deck_full)
+
         # Key0 was should have been offloaded to the database and should not be in the LRU
-        assert 'key0' not in lru_keys, f'shelf synced fail: {lru_keys}'
+        assert b'key0' not in lru_keys, f'shelf synced fail: {lru_keys}'
 
         # Key0 should be in the database
         assert 'key0' in db_keys, f'shelf synced too early: {db_keys}'
@@ -281,7 +322,7 @@ async def test(db_size:int = 10, verbose: bool = False) -> bool:
                 print('aiter for loop: ', item)
             else:
                 pass
-        assert item == f'key{cnt}', f'__aiter__ failed: {item}'
+        assert item == 'key0', f'__aiter__ failed: {item}'
 
         # Tests reads
         if verbose:
@@ -290,13 +331,13 @@ async def test(db_size:int = 10, verbose: bool = False) -> bool:
 
         # Test delete and list comprehension
         await shelf.delete('key0')
-        del_list = [x async for x in shelf]
-        assert 'key0' not in del_list, f'key0 not deleted from DB and LRU: {del_list}'
+        node_list = [x async for x in shelf]
+        assert 'key0' not in node_list, f'key0 not deleted from DB and LRU: {node_list}'
 
         # Test read moves the key to the most recently used position in the LRU
         await shelf.read('key1')
-        assert 'key1' in shelf.lru.deck, f'key1 not in LRU: {shelf.lru.deck}'
-        assert shelf.lru.deck[-1] == 'key1', f'key1 was not moved to the end of the LRU: {shelf.lru.deck}'
+        assert b'key1' in shelf.lru.deck, f'key1 not in LRU: {shelf.lru.deck}'
+        assert shelf.lru.deck[-1] == b'key1', f'key1 was not moved to the end of the LRU: {shelf.lru.deck}'
     
         # Test read_many
         keys = ['key1', 'key2', 'key3', 'key0']
@@ -307,9 +348,13 @@ async def test(db_size:int = 10, verbose: bool = False) -> bool:
         assert results['key0'] is None, f'key0 should be None: {results["key0"]}'
         
         # Key0 should not be in the LRU because it was deleted above
-        assert 'key0' not in shelf.lru.deck, f'key0 should not be in LRU: {shelf.lru.deck}'
+        assert b'key0' not in shelf.lru.deck, f'key0 should not be in LRU: {shelf.lru.deck}'
         if verbose:
             print('lru: ', shelf.lru.deck)
+
+        # Test get
+        get = await shelf.get('key0', 'NO KEY')
+        assert get == 'NO KEY', f'get failed: {get}'
 
     except Exception as err:
         LOG.error(f'LRUDataBase Test Failed: {err}')
@@ -318,8 +363,9 @@ async def test(db_size:int = 10, verbose: bool = False) -> bool:
         LOG.info('LRUDataBase Test Completed Successfully')
         return True
     finally:
+        database_path = Path(shelf.db.database_path)
         await shelf.close()
-        shelf.db.database_path.unlink()
+        database_path.unlink()
         if verbose:
             print('db closed')
         

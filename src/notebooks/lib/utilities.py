@@ -2,15 +2,22 @@ PACKAGE = 'LRUdb'
 CWD = f'/Users/Shared/SharedProjects/Projects/LastRecentlyUsedDataBase/{PACKAGE}/'
 
 
+def load_yaml(file_name: str) -> dict:
+	import yaml
+
+	path = CWD + file_name 
+
+	with open(path, 'rt') as file:
+		config = yaml.safe_load(file.read())
+	return config
+
+
 def setup_logging(path: str = 'configs/logging_config.yaml') -> None:
 	import logging as log
 	import logging.config 
 	import yaml
 
-	default_path = CWD + path
-
-	with open(default_path, 'rt') as file:
-		config = yaml.safe_load(file.read())
+	config = load_yaml(path)
 	
 	log.config.dictConfig(config)
 	

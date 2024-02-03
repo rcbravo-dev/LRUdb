@@ -1,10 +1,10 @@
 # notebooks
 *.ipynb
 src/archive/* 
-src/notebooks/*.ipynb
+# src/notebooks/*.ipynb
 database/*
 *.DS_Store
-/.DS_Store
+*/.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
