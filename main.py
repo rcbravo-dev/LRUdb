@@ -39,6 +39,12 @@ LOG.setLevel(CONFIGS['logging_level'])
 
 
 async def main(lru_size=100, box_size=50, steps=20, dt=1./30, bound_size=4, **kwargs): 
+    '''The code is an asynchronous Python function named ```main```. 
+    This function simulates a system of particles in a box, with the state 
+    of each particle being stored in a Least Recently Used (LRU) cache 
+    backed by a SQLite database. The function takes several parameters to 
+    configure the simulation and the LRU cache.'''
+    
     count = 0
 
     # Database
