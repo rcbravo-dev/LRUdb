@@ -1,20 +1,44 @@
-from src.notebooks.lib.utilities import setup_logging, import_util, CWD
-import_util(cwd=CWD, paths=['src/notebooks', 'src/notebooks/lib'])
-logging = setup_logging(path = 'configs/logging_config.yaml')
-LOG = logging.getLogger('application')
-LOG.debug('Application log started.')
+'''
+The code implements a Least Recently Used (LRU) cache with a backing database. 
+The code is used to test the imported LRU and Database using random particle
+collisions as an analog for customer interaction.
 
+Copyright (C) 2024  RC Bravo Consuling Inc., https://github.com/rcbravo-dev
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+'''
 import numpy as np
 from pathlib import Path
 import time
 
+from src.notebooks.lib.utilities import setup_logging, load_yaml, import_util
+CONFIGS = load_yaml('configs/config.yaml')['Application']
+MAIN_CONFIGS = load_yaml('configs/config.yaml')['main']
+CWD = CONFIGS['CWD']
+
+import_util(cwd=CWD, paths=['src/notebooks', 'src/notebooks/lib'])
 from src.notebooks.lib.lru_database import LRUDataBase
 from src.notebooks.lib.lru_database import test as lru_test
-
 from src.notebooks.lib.test_case import ParticleBox
 
+logging = setup_logging(path = CONFIGS['loggingConfigPath'])
+LOG = logging.getLogger(MAIN_CONFIGS['logger'])
+LOG.setLevel(CONFIGS['logging_level'])
 
-async def main(lru_size=100, box_size=50, steps=20, dt=1./30, bound_size=4):
+
+async def main(lru_size=100, box_size=50, steps=20, dt=1./30, bound_size=4, **kwargs): 
     count = 0
 
     # Database
@@ -23,7 +47,8 @@ async def main(lru_size=100, box_size=50, steps=20, dt=1./30, bound_size=4):
     shelf.lru._create_empty_deck(lru_size)
 
     # Particles in a box
-    np.random.seed(10101010)
+    np.random.seed(kwargs.get('SEED', 0))
+    
     init_state = -0.5 + np.random.random((box_size, 4))
     init_state[:, :2] *= 3.9
     bounds = [-bound_size, bound_size, -bound_size, bound_size]
@@ -37,7 +62,8 @@ async def main(lru_size=100, box_size=50, steps=20, dt=1./30, bound_size=4):
         count += 1
 
     if count == box_size:
-        # Run the animation
+
+        # Run the simulation
         for i in range(steps):
             box.step(dt)
 
@@ -64,12 +90,8 @@ async def main(lru_size=100, box_size=50, steps=20, dt=1./30, bound_size=4):
 
     return count
 
-
-# For python
-if __name__ == '__main__':
-    import asyncio
-
-    if asyncio.run(lru_test()):
+async def main_test():
+    if await lru_test():
         print('LRUDataBase test passed.', end='\n\n')
     else:
         print('LRUDataBase test failed.', end='\n\n')
@@ -80,10 +102,12 @@ if __name__ == '__main__':
     for lru_size in lru_sizes:
         time_store = []
         count_store = []
-        for trial in range(3):
+        MAIN_CONFIGS['lru_size'] = lru_size
 
+        for trial in range(3):
+            
             t = time.time()
-            cnt = asyncio.run(main(lru_size=lru_size, box_size=100, steps=500, dt=1./30, bound_size=2))
+            cnt = await main(**MAIN_CONFIGS)
             run_time = time.time() - t
 
             time_store.append(run_time)
@@ -99,3 +123,16 @@ if __name__ == '__main__':
         io_time = int((v["time"] / v["count"]) * 1e6)
         # Results
         print(f'\tLRU size: {k}, time: {v["time"]:.4f}, count: {v["count"]:.0f}, io: {io_time}µsec')
+
+
+
+if __name__ == '__main__':
+    import asyncio
+
+    try:
+        # Python
+        asyncio.run(main_test())
+    except Exception:
+        # Jupyter
+        print('Asyncio run failed. Running main_test() in a Jupyter loop.')
+        await main_test()

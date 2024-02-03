@@ -1,26 +1,62 @@
+'''
+The code is a Python class named AsyncDataBase that provides asynchronous 
+interaction with a SQLite database.
+
+Copyright (C) 2024  RC Bravo Consuling Inc., https://github.com/rcbravo-dev
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+'''
 import aiosqlite
 from collections import namedtuple
 from pathlib import Path
 
-from lib.utilities import setup_logging, CWD
-logging = setup_logging(path = 'configs/logging_config.yaml')
-LOG = logging.getLogger('DataBase')
-LOG.setLevel(logging.DEBUG)
+from lib.utilities import setup_logging, load_yaml
+CONFIGS = load_yaml('configs/config.yaml')['Application']
+DB_CONFIGS = load_yaml('configs/config.yaml')['DataBase']
+
+logging = setup_logging(path = CONFIGS['loggingConfigPath'])
+LOG = logging.getLogger(DB_CONFIGS['logger'])
+LOG.setLevel(CONFIGS['logging_level'])
 
 Node = namedtuple('Node', ['node_id', 'node'])
+CWD = CONFIGS['CWD']
 
 
 class AsyncDataBase:
+    '''The code is a Python class named AsyncDataBase that provides asynchronous 
+    interaction with a SQLite database. This class is designed to be used 
+    asynchronously, as indicated by the async keyword in many of its methods.
+    
+    This class is useful when you want to interact with a SQLite database asynchronously. 
+    It provides methods for creating a table, writing to the table, reading from the 
+    table, retrieving all keys from the table, deleting a node from the table, and 
+    closing the connection to the database.
+    '''
     sqliteConnection: aiosqlite.Connection
 
-    def __init__(self, file_name: str, table_name: str, database_path: str = CWD + 'database/'):
+    def __init__(self, file_name: str, table_name: str, database_path: str = CWD + 'database/') -> None:
+        '''This is the constructor method. It initializes the instance with a file name, 
+        a table name, and a database path.'''
         self.file_name = file_name
         self.table_name = table_name
         self.database_path = Path(f'{database_path}{file_name}.db')
         self.Node = Node
 
-    # log should be to the filename of the database
     async def open_connection(self) -> None:
+        '''This method opens a connection to the SQLite database. It also sets the 
+        row factory to aiosqlite.Row which allows you to access rows by their column 
+        names.'''
         try:
             self.sqliteConnection = await aiosqlite.connect(self.database_path)
             self.sqliteConnection.row_factory = aiosqlite.Row
@@ -32,9 +68,11 @@ class AsyncDataBase:
             LOG.exception(f'open_connection: {error}')
             raise
         else:
-            LOG.info(f'Connection to "{self.table_name}" established.')
+            LOG.info(f'Connection to "{self.file_name}" established.')
     
     async def create(self) -> None:
+        '''This method creates a new table in the database if it doesn't already 
+        exist. The table has two columns: "node_id" (text) and "node" (blob).'''
         try:
             await self.cursor.execute(
                 f'''CREATE TABLE IF NOT EXISTS {self.table_name} (
@@ -52,10 +90,9 @@ class AsyncDataBase:
             return None
 
     async def write(self, values: tuple | dict) -> None:
-        '''This method inputs "values" only because it is only used when the
-        LRU cache is being synced with the main database. The values are
-        a list or tuple when inserting single key:value pairs, and a dict when
-        inserting multiple key:value pairs. '''
+        '''This method writes values to the database. The values can be a tuple 
+        or list when inserting single key-value pairs, and a dict when inserting 
+        multiple key-value pairs.'''
         try:
             if isinstance(values, (tuple, list)):
                 await self.cursor.execute(
@@ -81,6 +118,8 @@ class AsyncDataBase:
             LOG.debug(f'Write successful, count={len(values)}, table_name={self.table_name}')
             
     async def read(self, node_id: str | list) -> Node | list:
+        '''This method reads values from the database using a node_id. The node_id 
+        can be a string, bytes, list, or tuple.'''
         try:
             if isinstance(node_id, (str, bytes)):
                 await self.cursor.execute(
@@ -118,6 +157,7 @@ class AsyncDataBase:
             return results
         
     async def node_keys(self) -> list:
+        '''This method retrieves all the node_ids from the database.'''
         try:
             await self.cursor.execute(f"SELECT node_id FROM {self.table_name}")
             row = await self.cursor.fetchall()
@@ -134,6 +174,7 @@ class AsyncDataBase:
             return results
 
     async def delete_node(self, node_id: str) -> None:
+        '''This method deletes a node from the database using a node_id.'''
         try:
             await self.cursor.execute(
                 f"DELETE FROM {self.table_name} WHERE node_id=?", 
@@ -149,6 +190,7 @@ class AsyncDataBase:
             LOG.debug(f'Delete node successful, node_id={node_id}, table_name={self.table_name}')
 
     async def close(self) -> None:
+        '''This method closes the cursor and the connection to the database.'''
         try:
             await self.cursor.close()
             await self.sqliteConnection.close()
@@ -162,10 +204,14 @@ class AsyncDataBase:
             LOG.info(f'Connection closed, table_name={self.table_name}')
 
     def _value_string(self, values: dict) -> list:
+        '''This is a helper method that converts a dictionary 
+        into a list of tuples. It's used in the write method when 
+        inserting multiple key-value pairs into the database.'''
         value_store = []
         for k, v in values.items():
             value_store.append((k, v))
         return value_store
+
 
 # Tests
 async def _test_type_write(database: AsyncDataBase) -> None:
@@ -186,9 +232,7 @@ async def _test_type_read(database: AsyncDataBase) -> None:
     except Exception as e:
         raise e 
 
-async def test() -> bool:  
-    from lib.utilities import CWD
-  
+async def test() -> bool:    
     # Test data
     data = {
         '_tuple':('_tuple', b'123'),

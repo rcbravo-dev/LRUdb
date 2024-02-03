@@ -1,6 +1,25 @@
 version: 1
 
+Application:
+  CWD: '/Users/Shared/SharedProjects/Projects/LastRecentlyUsedDataBase/LRUdb/'
+  TRASH: '/Users/code/.Trash/'
+
+  # Logging level, ie. logging.setLevel(logging.DEBUG)
+  # CRITICAL: 50, ERROR: 40, WARNING: 30, INFO: 20, DEBUG: 10, NOTSET
+  logging_level: 20
+  loggingConfigPath: 'configs/logging_config.yaml'
+
+main:
+  logger: 'App'
+  lru_size: 50
+  box_size: 100
+  steps: 500
+  dt: 0.033
+  bound_size: 2
+  SEED: 10101010
+
 LRU:
+  logger: 'LRU'
   # The maximum number of items that can be stored in the cache
   maxlen: 100
   # When the cache is full, the fraction of items to sync to the
@@ -8,8 +27,12 @@ LRU:
   sync_fraction: 0.5
 
 LRU_db:
+  logger: 'LRU_db'
   # Encoding for key strings
   keyencoding: 'utf-8'
   # pickle protocol
   protocol: None
+
+DataBase:
+  logger: 'DataBase'
 

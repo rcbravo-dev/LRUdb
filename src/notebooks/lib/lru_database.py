@@ -1,3 +1,25 @@
+'''
+The code is a Python class named LRUDataBase that implements a 
+Least Recently Used (LRU) cache with a backing database. This class is 
+designed to be used asynchronously, as indicated by the async keyword in 
+many of its methods.
+
+Copyright (C) 2024  RC Bravo Consuling Inc., https://github.com/rcbravo-dev
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+'''
+
 from collections import namedtuple
 from io import BytesIO
 from pickle import DEFAULT_PROTOCOL, Pickler, Unpickler
@@ -9,35 +31,59 @@ from lib.database import test as AsyncDataBase_test
 from lib.lru import LRU
 from lib.lru import test as LRU_test
 
-logging = setup_logging(path = 'configs/logging_config.yaml')
-LOG = logging.getLogger('LRU_db')
-LOG.setLevel(logging.DEBUG)
+CONFIGS = load_yaml('configs/config.yaml')['Application']
+LRU_CONFIGS = load_yaml('configs/config.yaml')['LRU_db']
+LRU_CONFIGS['protocol'] = DEFAULT_PROTOCOL
 
-CONFIGS = load_yaml('configs/config.yaml')['LRU_db']
-CONFIGS['protocol'] = DEFAULT_PROTOCOL
+logging = setup_logging(path = CONFIGS['loggingConfigPath'])
+LOG = logging.getLogger(LRU_CONFIGS['logger'])
+LOG.setLevel(CONFIGS['logging_level'])
 
 Node = namedtuple('Node', ['node_id', 'node'])
 
 
 class LRUDataBase:
-    def __init__(self, file_name: str, table_name: str, configs: dict = CONFIGS) -> None:
+    '''The code is a Python class named LRUDataBase that implements a 
+    Least Recently Used (LRU) cache with a backing database. This 
+    class is designed to be used asynchronously, as indicated by the 
+    async keyword in many of its methods.
+    
+    This class is useful when you want to cache the most recently used 
+    data in memory for quick access, but also want to persist all data 
+    in a database for long-term storage.'''
+    
+    def __init__(self, file_name: str, table_name: str, configs: dict = LRU_CONFIGS) -> None:
+        '''This is the constructor method. It initializes the instance with a file 
+        name, a table name, and a configuration dictionary.'''
         self.file_name = file_name
         self.table_name = table_name
         self.__dict__.update(configs)
     
     async def __aenter__(self):
+        '''These methods are used to make the class compatible with the async context 
+        manager protocol (async with statement). __aenter__ connects to the database 
+        and __aexit__ closes the connection.'''
         await self.connect()
         return self
 
     async def __aexit__(self, type, value, traceback):
+        '''These methods are used to make the class compatible with the async context 
+        manager protocol (async with statement). __aenter__ connects to the database 
+        and __aexit__ closes the connection.'''
         await self.close()
     
     def __aiter__(self):
-        '''Called by: async for x in self:'''
+        '''These methods make the class an asynchronous iterable. The __anext__ 
+        method retrieves the next key from the database or the LRU cache.
+        
+        Called by: async for x in self:'''
         return self
 
     async def __anext__(self):
-        '''Called by: async for x in self:'''
+        '''These methods make the class an asynchronous iterable. The __anext__ 
+        method retrieves the next key from the database or the LRU cache.
+        
+        Called by: async for x in self:'''
         try:
             if not hasattr(self, '_database_keys'):
                 # Get the keys from the database, returns a list of keys: str
@@ -63,6 +109,7 @@ class LRUDataBase:
             return _next
 
     async def connect(self, database_path: str | None = None) -> None:
+        '''This method connects to the database and initializes the LRU cache.'''
         self.lru = LRU()
     
         # Creates the connection thread and the cursor
@@ -85,6 +132,8 @@ class LRUDataBase:
             await self.sync()
         
     async def read(self, key: str | list) -> Any | list:
+        '''This method reads a value from the LRU cache or the database using a key. 
+        If the key is not found, it returns None.'''
         if isinstance(key, str):
             try:
                 key = self._encode_key(key)
@@ -111,15 +160,9 @@ class LRUDataBase:
         elif isinstance(key, list):
             return await self._read_many(key)
         
-    async def get(self, key: str, default: Any = None) -> Any:
-        '''Returns the unserialized value of the key. If not in the 
-        database or LRU, returns default.'''
-        results = await self.read(key)
-        if results is None:
-            return default
-        return results
-
     async def _read_many(self, keys: list) -> dict:
+        '''Reads a list of keys from the LRU and database. Returns a dictionary of
+        key, value pairs. If a key is not found, the value is None.'''
         read_from_db = []
         results = {}
 
@@ -156,6 +199,14 @@ class LRUDataBase:
                 results[key] = value
 
         return results
+    
+    async def get(self, key: str, default: Any = None) -> Any:
+        '''Returns the unserialized value of the key. If not in the 
+        database or LRU, returns default.'''
+        results = await self.read(key)
+        if results is None:
+            return default
+        return results
 
     async def node_keys(self) -> list:
         '''Retrieves all the keys from the database'''
@@ -163,7 +214,10 @@ class LRUDataBase:
         return [self._decode_key(key) for key in keys]
     
     async def delete(self, key: str) -> None:
-        '''del self[key]'''
+        '''This method deletes a key-value pair from the database 
+        and the LRU cache.
+        
+        del self[key]'''
         key = self._encode_key(key)
 
         await self.db.delete_node(key)
@@ -174,6 +228,7 @@ class LRUDataBase:
             pass
 
     async def flush_cache(self):
+        '''This method flushes the LRU cache to the database.'''
         try:
             # Flush the LRU cache to the database
             await self.db.write(self.lru.cache)    
@@ -186,6 +241,7 @@ class LRUDataBase:
             LOG.info(f'Flushed the LRU cache, shelve_name={self.table_name}, count={cache_size}')
             
     async def sync(self):
+        '''This method offloads old items from the LRU cache to the database.'''
         try:
             sync_store = self.lru.sync_make_ready()
 
@@ -201,6 +257,8 @@ class LRUDataBase:
             LOG.info(f'Sync offloaded old cached items to the database, shelve_name={self.table_name}, count={len(sync_store)}')
    
     async def close(self):
+        '''This method flushes the cache to the database and 
+        closes the database connection.'''
         try:
             await self.flush_cache()
             await self.db.close()
@@ -213,18 +271,21 @@ class LRUDataBase:
             LOG.info(f'Closed LRUDataBase table: {self.table_name}')       
 
     def _encode_key(self, key: str) -> bytes:
+        '''helper methods for encoding keys.'''
         if isinstance(key, bytes):
             return key
         else:
             return key.encode(self.keyencoding)
     
     def _decode_key(self, key: bytes) -> str:
+        '''helper methods for decoding keys.'''
         if isinstance(key, str):
             return key
         else:
             return key.decode(self.keyencoding)
     
     def _serialize(self, value) -> bytes:
+        '''helper methods for serializing values.'''
         if isinstance(value, bytes):
             return value
         else:
@@ -234,6 +295,7 @@ class LRUDataBase:
             return f.getvalue()
     
     def _un_serialize(self, blob: bytes) -> Any:
+        '''helper methods for unserializing values.'''
         if not isinstance(blob, bytes):
             return blob
         else:
@@ -241,14 +303,11 @@ class LRUDataBase:
             return Unpickler(f).load()      
         
     
-async def test(db_size:int = 10, verbose: bool = False) -> bool:
+async def test(db_size:int = 10, app_configs: dict = CONFIGS, lru_configs: dict = LRU_CONFIGS, verbose: bool = False) -> bool:
     import hashlib
     from pathlib import Path
-    from pickle import DEFAULT_PROTOCOL
-    from lib.utilities import CWD
-    configs = load_yaml('configs/config.yaml')['LRU_db']
-    configs['protocol'] = DEFAULT_PROTOCOL
 
+    CWD = app_configs['CWD']
     test_database = CWD + 'database/zkp_test_db.db'
 
     try:
@@ -268,7 +327,7 @@ async def test(db_size:int = 10, verbose: bool = False) -> bool:
         assert LRU_test(), 'LRU test failed'
         
         # Test the LRUDataBase
-        shelf = LRUDataBase('test_database', 'test_case', configs=configs)
+        shelf = LRUDataBase('test_database', 'test_case', configs=lru_configs)
         await shelf.connect()
         shelf.lru.maxlen = db_size
         if verbose:
